@@ -6,10 +6,14 @@ from tkinter import messagebox, scrolledtext
 import numpy as np
 from pathlib import Path
 from openai import OpenAI
+import json
+import datetime
+import pyperclip
 
 # Constants
 AUDIO_FILE = "output.wav"
 SAMPLERATE = 44100
+HISTORY_FILE = "transcription_history.json"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Check if the API key is available
@@ -41,7 +45,7 @@ def start_recording():
     stop_button.config(state=tk.NORMAL)
 
 
-# Function to stop recording
+# Function to stop recording and automatically transcribe
 def stop_recording():
     global recording
     print("Recording stopped.")
@@ -62,13 +66,14 @@ def stop_recording():
 
     start_button.config(state=tk.NORMAL)
     stop_button.config(state=tk.DISABLED)
-    transcribe_button.config(state=tk.NORMAL)
+
+    # Automatically transcribe the audio
+    transcribe_audio()
 
 
 # Function to transcribe the recorded audio
 def transcribe_audio():
     try:
-        transcribe_button.config(state=tk.DISABLED)
         status_label.config(text="Transcription in progress...", fg="blue")
         root.update_idletasks()  # Force update the label
 
@@ -79,20 +84,55 @@ def transcribe_audio():
                 file=audio_file_obj
             )
         transcription_text = transcription.text
+
+        # Update the transcription box
         transcription_box.delete(1.0, tk.END)
         transcription_box.insert(tk.END, transcription_text)
 
-        status_label.config(text="Transcription complete", fg="green")
+        # Copy to clipboard
+        pyperclip.copy(transcription_text)
+
+        # Save to history
+        save_to_history(transcription_text)
+
+        # Update history display
+        update_history_display()
+
+        status_label.config(text="Transcription complete and copied to clipboard", fg="green")
     except Exception as e:
         messagebox.showerror("Transcription Error", f"An error occurred: {e}")
         status_label.config(text="Transcription failed", fg="red")
-    finally:
-        transcribe_button.config(state=tk.NORMAL)
+
+
+# Function to save transcription to history
+def save_to_history(transcription):
+    history = load_history()
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    history.append({"timestamp": timestamp, "transcription": transcription})
+
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(history, f, indent=2)
+
+
+# Function to load history
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+
+# Function to update history display
+def update_history_display():
+    history = load_history()
+    history_box.delete(1.0, tk.END)
+    for entry in reversed(history):
+        history_box.insert(tk.END, f"{entry['timestamp']}:\n{entry['transcription']}\n\n")
 
 
 # Create the main window
 root = tk.Tk()
-root.title("Simple Audio Recorder with Transcription")
+root.title("Audio Recorder with Transcription and History")
 
 # Add start/stop recording buttons
 start_button = tk.Button(root, text="Start Recording", command=start_recording)
@@ -101,10 +141,6 @@ start_button.pack(pady=10)
 stop_button = tk.Button(root, text="Stop Recording", command=stop_recording, state=tk.DISABLED)
 stop_button.pack(pady=10)
 
-# Add transcribe button
-transcribe_button = tk.Button(root, text="Transcribe", command=transcribe_audio, state=tk.DISABLED)
-transcribe_button.pack(pady=10)
-
 # Add transcription display box
 transcription_box = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=10)
 transcription_box.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
@@ -112,6 +148,15 @@ transcription_box.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 # Add status label
 status_label = tk.Label(root, text="Not recording", fg="black")
 status_label.pack(pady=5)
+
+# Add history display box
+history_label = tk.Label(root, text="Transcription History:")
+history_label.pack(pady=5)
+history_box = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=10)
+history_box.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+# Initialize history display
+update_history_display()
 
 # Run the application
 root.mainloop()
