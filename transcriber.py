@@ -98,6 +98,13 @@ class AudioRecorder:
         return []
 
 
+def get_transcription_preview(transcription, max_length=50):
+    """Generate a preview of the transcription."""
+    if len(transcription) > max_length:
+        return transcription[:max_length] + "..."
+    return transcription
+
+
 def main():
     st.set_page_config(page_title="Audio Recorder with Transcription", layout="wide")
     st.title("Audio Recorder with Transcription")
@@ -111,48 +118,54 @@ def main():
     total_time = sum(transaction.get('duration', 0) for transaction in transactions)
     st.sidebar.write(f"Total Time: {total_time:.2f} min | Total Cost: ${total_cost:.2f}")
 
-    # Record button
-    if st.button("Record" if not st.session_state.recorder.is_recording else "Stop Recording"):
-        try:
-            if not st.session_state.recorder.is_recording:
-                st.session_state.recorder.start_recording()
-                st.session_state.recording_start_time = time.time()
+    # Create two columns for layout
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        # Record button - made more prominent
+        button_color = "red" if st.session_state.recorder.is_recording else "green"
+        button_text = "Stop Recording" if st.session_state.recorder.is_recording else "Start Recording"
+        if st.button(button_text, key="record_button", help="Click to start or stop recording",
+                     use_container_width=True):
+            try:
+                if not st.session_state.recorder.is_recording:
+                    st.session_state.recorder.start_recording()
+                    st.session_state.recording_start_time = time.time()
+                else:
+                    st.session_state.recorder.stop_recording()
+                    duration = st.session_state.recorder.save_audio()
+                    st.session_state.audio_duration = duration
+                    st.session_state.audio_saved = True
+
+                    # Automatic transcription
+                    with st.spinner("Transcribing..."):
+                        transcription = st.session_state.recorder.transcribe_audio()
+                        AudioRecorder.save_to_history(transcription, duration)
+                        AudioRecorder.save_transaction(duration)
+                        st.session_state.transcription = transcription
+
+                        # Copy to clipboard
+                        pyperclip.copy(transcription)
+                        st.success("Transcription copied to clipboard!")
                 st.rerun()
-            else:
-                st.session_state.recorder.stop_recording()
-                duration = st.session_state.recorder.save_audio()
-                st.session_state.audio_duration = duration
-                st.session_state.audio_saved = True
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+                logging.error(f"Recording error: {str(e)}")
 
-                # Automatic transcription
-                with st.spinner("Transcribing..."):
-                    transcription = st.session_state.recorder.transcribe_audio()
-                    AudioRecorder.save_to_history(transcription, duration)
-                    AudioRecorder.save_transaction(duration)
-                    st.session_state.transcription = transcription
+        # Display recording status
+        if st.session_state.recorder.is_recording:
+            st.write("Recording in progress...")
+        elif hasattr(st.session_state, 'audio_saved') and st.session_state.audio_saved:
+            st.write("Recording saved and transcribed. Transcription copied to clipboard.")
 
-                    # Copy to clipboard
-                    pyperclip.copy(transcription)
-                    st.success("Transcription copied to clipboard!")
+    with col2:
+        # Display latest transcription
+        if hasattr(st.session_state, 'transcription'):
+            st.subheader("Latest Transcription:")
+            st.text_area("Latest transcription", value=st.session_state.transcription, height=200,
+                         key="latest_transcription")
 
-                st.rerun()
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-            logging.error(f"Recording error: {str(e)}")
-
-    # Display recording status
-    if st.session_state.recorder.is_recording:
-        st.write("Recording... (Click 'Stop Recording' to finish)")
-    elif hasattr(st.session_state, 'audio_saved') and st.session_state.audio_saved:
-        st.write("Recording saved and transcribed. The transcription has been copied to your clipboard.")
-
-    # Display transcription
-    if hasattr(st.session_state, 'transcription'):
-        st.subheader("Transcription:")
-        st.text_area("Latest Transcription", value=st.session_state.transcription, height=200,
-                     key="latest_transcription")
-
-    # Display history
+    # Display history in a more compact form with previews
     st.subheader("Transcription History:")
     history = AudioRecorder.load_history()
     for index, entry in enumerate(reversed(history)):
@@ -160,9 +173,10 @@ def main():
         transcription = entry.get('transcription', 'No transcription available')
         duration = entry.get('duration', 'Unknown')
         duration_str = f"{duration:.2f} min" if isinstance(duration, (int, float)) else str(duration)
-        st.text(f"{timestamp} (Duration: {duration_str}):")
-        st.text_area(f"Historical Transcription {index}", value=transcription, height=100, key=f"history_{index}")
-        st.markdown("---")
+        preview = get_transcription_preview(transcription)
+
+        with st.expander(f"{timestamp} (Duration: {duration_str}): {preview}"):
+            st.text_area(f"Transcription {index}", value=transcription, height=100, key=f"history_{index}")
 
 
 if __name__ == "__main__":
