@@ -11,9 +11,10 @@ import pyperclip
 import threading
 import queue
 import logging
+import time
 
 # Set up logging
-logging.basicConfig(filename='app.log', level=logging.INFO,
+logging.basicConfig(filename='app.log', level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Constants
@@ -26,6 +27,7 @@ COST_PER_MINUTE = 0.006
 
 if OPENAI_API_KEY is None:
     raise ValueError("OPENAI_API_KEY environment variable is not set")
+
 
 class AudioRecorderApp:
     def __init__(self, master):
@@ -90,6 +92,7 @@ class AudioRecorderApp:
         try:
             while True:
                 method, args = self.update_queue.get_nowait()
+                logging.debug(f"Executing: {method} with args: {args}")
                 getattr(self, method)(*args)
                 self.update_queue.task_done()
         except queue.Empty:
@@ -97,15 +100,19 @@ class AudioRecorderApp:
         except Exception as e:
             logging.error(f"Error in update_loop: {e}")
         finally:
-            self.master.after(100, self.update_loop)
+            self.master.after(50, self.update_loop)
 
     def toggle_recording(self):
+        logging.debug(f"Toggle recording called. Current state: {self.state}")
         if self.state == "recording":
             self.stop_recording()
         elif self.state == "ready":
             self.start_recording()
+        else:
+            logging.warning(f"Toggle recording called in unexpected state: {self.state}")
 
     def start_recording(self):
+        logging.info("Starting recording")
         self.audio_data = []
         self.recording = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=self.audio_callback)
         self.recording.start()
@@ -117,6 +124,7 @@ class AudioRecorderApp:
         self.audio_data.append(indata.copy())
 
     def stop_recording(self):
+        logging.info("Stopping recording")
         if self.recording:
             self.recording.stop()
             self.recording.close()
@@ -126,6 +134,7 @@ class AudioRecorderApp:
         threading.Thread(target=self.process_audio, daemon=True).start()
 
     def process_audio(self):
+        logging.info("Processing audio")
         audio = np.concatenate(self.audio_data, axis=0)
         duration = len(audio) / SAMPLE_RATE / 60  # duration in minutes
         sf.write(AUDIO_FILE, audio, SAMPLE_RATE)
@@ -133,6 +142,7 @@ class AudioRecorderApp:
 
     def transcribe_audio(self, duration):
         try:
+            logging.info("Starting transcription")
             with open(AUDIO_FILE, "rb") as audio_file:
                 self.api_call_count += 1
                 logging.info(f"Making API call #{self.api_call_count}")
@@ -148,20 +158,27 @@ class AudioRecorderApp:
             self.update_queue.put(("update_cost_display", ()))
 
             self.update_queue.put(("update_status", ("Transcription complete",)))
-            self.update_queue.put(("update_button", ("Record", "Record.TButton", tk.NORMAL)))
-            self.state = "ready"
+
+            # Delay re-enabling the button
+            self.master.after(1000, lambda: self.update_queue.put(("enable_button", ())))
+
+            logging.info("Transcription complete")
         except Exception as e:
             logging.error(f"Error in transcribe_audio: {e}")
             self.update_queue.put(("show_error", ("Transcription Error", f"An error occurred: {e}")))
             self.update_queue.put(("update_status", ("Transcription failed",)))
-            self.update_queue.put(("update_button", ("Record", "Record.TButton", tk.NORMAL)))
-            self.state = "ready"
+            self.update_queue.put(("enable_button", ()))
 
     def update_status(self, text):
         self.status_label.config(text=text)
 
     def update_button(self, text, style, state=tk.NORMAL):
         self.toggle_button.config(text=text, style=style, state=state)
+
+    def enable_button(self):
+        logging.info("Enabling record button")
+        self.toggle_button.config(text="Record", style="Record.TButton", state=tk.NORMAL)
+        self.state = "ready"
 
     def update_transcription(self, text):
         self.transcription_box.delete(1.0, tk.END)
