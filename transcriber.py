@@ -2,13 +2,14 @@ import os
 import sounddevice as sd
 import wave
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext
 import numpy as np
 from pathlib import Path
 from openai import OpenAI
 import json
 import datetime
 import pyperclip
+import threading
 
 # Constants
 AUDIO_FILE = "output.wav"
@@ -39,7 +40,7 @@ def audio_callback(indata, frames, time, status):
 def start_recording():
     global recording, audio_frames, recording_start_time
     print("Recording started...")
-    status_label.config(text="Recording...", fg="red")
+    status_label.config(text="Recording...", foreground="red")
     audio_frames = []  # Clear the previous audio data
     recording_start_time = datetime.datetime.now()
 
@@ -69,20 +70,19 @@ def stop_recording():
         wf.writeframes((audio_data * 32767).astype('int16').tobytes())
 
     file_size = os.path.getsize(AUDIO_FILE) / 1024  # in KB
-    status_label.config(text=f"Recording stopped. File size: {file_size:.2f} KB", fg="green")
+    status_label.config(text=f"Recording stopped. File size: {file_size:.2f} KB", foreground="green")
 
     start_button.config(state=tk.NORMAL)
     stop_button.config(state=tk.DISABLED)
 
-    # Automatically transcribe the audio
-    transcribe_audio(duration)
+    # Automatically transcribe the audio in a separate thread
+    threading.Thread(target=transcribe_audio, args=(duration,), daemon=True).start()
 
 
 # Function to transcribe the recorded audio
 def transcribe_audio(duration):
     try:
-        status_label.config(text="Transcription in progress...", fg="blue")
-        root.update_idletasks()  # Force update the label
+        root.after(0, lambda: status_label.config(text="Transcription in progress...", foreground="blue"))
 
         file_path = Path(AUDIO_FILE)
         with open(file_path, "rb") as audio_file_obj:
@@ -92,34 +92,38 @@ def transcribe_audio(duration):
             )
         transcription_text = transcription.text
 
-        # Update the transcription box
-        transcription_box.delete(1.0, tk.END)
-        transcription_box.insert(tk.END, transcription_text)
+        root.after(0, lambda: transcription_box.delete(1.0, tk.END))
+        root.after(0, lambda: transcription_box.insert(tk.END, transcription_text))
 
         # Copy to clipboard
         pyperclip.copy(transcription_text)
 
         # Save to history
-        save_to_history(transcription_text)
+        save_to_history(transcription_text, duration)
 
         # Save transaction and update cost
         save_transaction(duration)
-        update_cost_display()
+        root.after(0, update_cost_display)
 
         # Update history display
-        update_history_display()
+        root.after(0, update_history_display)
 
-        status_label.config(text="Transcription complete and copied to clipboard", fg="green")
+        root.after(0, lambda: status_label.config(text="Transcription complete and copied to clipboard",
+                                                  foreground="green"))
     except Exception as e:
-        messagebox.showerror("Transcription Error", f"An error occurred: {e}")
-        status_label.config(text="Transcription failed", fg="red")
+        root.after(0, lambda: messagebox.showerror("Transcription Error", f"An error occurred: {e}"))
+        root.after(0, lambda: status_label.config(text="Transcription failed", foreground="red"))
 
 
 # Function to save transcription to history
-def save_to_history(transcription):
+def save_to_history(transcription, duration):
     history = load_history()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    history.append({"timestamp": timestamp, "transcription": transcription})
+    history.append({
+        "timestamp": timestamp,
+        "duration": duration,
+        "transcription": transcription
+    })
 
     with open(HISTORY_FILE, 'w') as f:
         json.dump(history, f, indent=2)
@@ -138,7 +142,16 @@ def update_history_display():
     history = load_history()
     history_box.delete(1.0, tk.END)
     for entry in reversed(history):
-        history_box.insert(tk.END, f"{entry['timestamp']}:\n{entry['transcription']}\n\n")
+        timestamp = entry['timestamp']
+        transcription = entry['transcription']
+
+        # Check if duration is available
+        if 'duration' in entry:
+            duration_str = f"(Duration: {entry['duration']:.2f} min)"
+        else:
+            duration_str = "(Duration: N/A)"
+
+        history_box.insert(tk.END, f"{timestamp} {duration_str}:\n{transcription}\n\n")
 
 
 # Function to save transaction
@@ -160,46 +173,65 @@ def load_transactions():
     return []
 
 
-# Function to calculate total cost
-def calculate_total_cost():
+# Function to calculate total cost and time
+def calculate_totals():
     transactions = load_transactions()
-    return sum(transaction['cost'] for transaction in transactions)
+    total_cost = sum(transaction['cost'] for transaction in transactions)
+    total_time = sum(transaction['duration'] for transaction in transactions)
+    return total_cost, total_time
 
 
 # Function to update cost display
 def update_cost_display():
-    total_cost = calculate_total_cost()
-    cost_label.config(text=f"Total Cost: ${total_cost:.2f}")
+    total_cost, total_time = calculate_totals()
+    cost_label.config(text=f"Total Time: {total_time:.2f} min | Total Cost: ${total_cost:.2f}")
 
 
 # Create the main window
 root = tk.Tk()
-root.title("Audio Recorder with Transcription, History, and Cost Tracking")
+root.title("Audio Recorder with Transcription")
+root.geometry("600x800")
+
+style = ttk.Style()
+style.theme_use('clam')
+
+# Configure styles
+style.configure("TButton", padding=10, font=('Helvetica', 12))
+style.configure("TLabel", font=('Helvetica', 12))
+
+# Create a main frame
+main_frame = ttk.Frame(root, padding="20 20 20 20")
+main_frame.pack(fill=tk.BOTH, expand=True)
 
 # Add cost display label in the upper right corner
-cost_label = tk.Label(root, text="Total Cost: $0.00", fg="blue")
-cost_label.pack(anchor='ne', padx=10, pady=10)
+cost_label = ttk.Label(main_frame, text="Total Time: 0.00 min | Total Cost: $0.00", foreground="blue")
+cost_label.pack(anchor='ne', pady=(0, 20))
 
 # Add start/stop recording buttons
-start_button = tk.Button(root, text="Start Recording", command=start_recording)
-start_button.pack(pady=10)
+button_frame = ttk.Frame(main_frame)
+button_frame.pack(fill=tk.X, pady=10)
 
-stop_button = tk.Button(root, text="Stop Recording", command=stop_recording, state=tk.DISABLED)
-stop_button.pack(pady=10)
+start_button = ttk.Button(button_frame, text="Start Recording", command=start_recording)
+start_button.pack(side=tk.LEFT, expand=True, padx=5)
 
-# Add transcription display box
-transcription_box = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=10)
-transcription_box.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+stop_button = ttk.Button(button_frame, text="Stop Recording", command=stop_recording, state=tk.DISABLED)
+stop_button.pack(side=tk.LEFT, expand=True, padx=5)
 
 # Add status label
-status_label = tk.Label(root, text="Not recording", fg="black")
-status_label.pack(pady=5)
+status_label = ttk.Label(main_frame, text="Not recording", foreground="black")
+status_label.pack(pady=10)
+
+# Add transcription display box
+transcription_label = ttk.Label(main_frame, text="Transcription:")
+transcription_label.pack(anchor='w', pady=(20, 5))
+transcription_box = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, height=10, font=('Helvetica', 10))
+transcription_box.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
 
 # Add history display box
-history_label = tk.Label(root, text="Transcription History:")
-history_label.pack(pady=5)
-history_box = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=10)
-history_box.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+history_label = ttk.Label(main_frame, text="Transcription History:")
+history_label.pack(anchor='w', pady=(0, 5))
+history_box = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, height=10, font=('Helvetica', 10))
+history_box.pack(fill=tk.BOTH, expand=True)
 
 # Initialize history display and cost display
 update_history_display()
