@@ -32,6 +32,7 @@ def audio_callback(indata, frames, time, status):
 def start_recording():
     global recording, audio_frames
     print("Recording started...")
+    status_label.config(text="Recording...", fg="red")
     audio_frames = []  # Clear the previous audio data
 
     recording = sd.InputStream(samplerate=SAMPLERATE, channels=1, dtype='float32', callback=audio_callback)
@@ -56,14 +57,21 @@ def stop_recording():
         wf.setframerate(SAMPLERATE)
         wf.writeframes((audio_data * 32767).astype('int16').tobytes())
 
-    messagebox.showinfo("Recording Complete", f"Audio saved to {AUDIO_FILE}")
+    file_size = os.path.getsize(AUDIO_FILE) / 1024  # in KB
+    status_label.config(text=f"Recording stopped. File size: {file_size:.2f} KB", fg="green")
+
     start_button.config(state=tk.NORMAL)
     stop_button.config(state=tk.DISABLED)
+    transcribe_button.config(state=tk.NORMAL)
 
 
 # Function to transcribe the recorded audio
 def transcribe_audio():
     try:
+        transcribe_button.config(state=tk.DISABLED)
+        status_label.config(text="Transcription in progress...", fg="blue")
+        root.update_idletasks()  # Force update the label
+
         file_path = Path(AUDIO_FILE)
         with open(file_path, "rb") as audio_file_obj:
             transcription = client.audio.transcriptions.create(
@@ -73,8 +81,13 @@ def transcribe_audio():
         transcription_text = transcription.text
         transcription_box.delete(1.0, tk.END)
         transcription_box.insert(tk.END, transcription_text)
+
+        status_label.config(text="Transcription complete", fg="green")
     except Exception as e:
         messagebox.showerror("Transcription Error", f"An error occurred: {e}")
+        status_label.config(text="Transcription failed", fg="red")
+    finally:
+        transcribe_button.config(state=tk.NORMAL)
 
 
 # Create the main window
@@ -89,12 +102,16 @@ stop_button = tk.Button(root, text="Stop Recording", command=stop_recording, sta
 stop_button.pack(pady=10)
 
 # Add transcribe button
-transcribe_button = tk.Button(root, text="Transcribe", command=transcribe_audio)
+transcribe_button = tk.Button(root, text="Transcribe", command=transcribe_audio, state=tk.DISABLED)
 transcribe_button.pack(pady=10)
 
 # Add transcription display box
 transcription_box = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=10)
 transcription_box.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+# Add status label
+status_label = tk.Label(root, text="Not recording", fg="black")
+status_label.pack(pady=5)
 
 # Run the application
 root.mainloop()
