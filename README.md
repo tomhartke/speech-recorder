@@ -43,6 +43,17 @@ This project is a transcription application that uses Streamlit for the web inte
     pip install -r requirements.txt
     ```
 
+### Putting it all together on a mac
+    
+- Just copy and paste this into the command line initially, then run `./run_app.sh` in the future.
+    
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    ./run_app.sh
+    ```
+
 ## Running the Application
 
 1. **Run the application using the provided script:**
