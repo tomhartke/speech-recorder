@@ -9,6 +9,12 @@ import json
 import datetime
 import pyperclip
 import threading
+import queue
+import logging
+
+# Set up logging
+logging.basicConfig(filename='app.log', level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Constants
 AUDIO_FILE = "output.wav"
@@ -21,7 +27,6 @@ COST_PER_MINUTE = 0.006
 if OPENAI_API_KEY is None:
     raise ValueError("OPENAI_API_KEY environment variable is not set")
 
-
 class AudioRecorderApp:
     def __init__(self, master):
         self.master = master
@@ -32,8 +37,8 @@ class AudioRecorderApp:
         self.style.theme_use('clam')
 
         # Configure button styles
-        self.style.configure("Record.TButton", background="red", foreground="white")
-        self.style.configure("Stop.TButton", background="gray", foreground="white")
+        self.style.configure("Record.TButton", background="green", foreground="white", font=('Helvetica', 12, 'bold'))
+        self.style.configure("Stop.TButton", background="red", foreground="white", font=('Helvetica', 12, 'bold'))
 
         self.main_frame = ttk.Frame(master, padding="20")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
@@ -44,13 +49,9 @@ class AudioRecorderApp:
         self.button_frame = ttk.Frame(self.main_frame)
         self.button_frame.pack(fill=tk.X, pady=10)
 
-        self.start_button = ttk.Button(self.button_frame, text="Record", command=self.start_recording,
-                                       style="Record.TButton")
-        self.start_button.pack(side=tk.LEFT, expand=True, padx=5)
-
-        self.stop_button = ttk.Button(self.button_frame, text="Stop", command=self.stop_recording, state=tk.DISABLED,
-                                      style="Stop.TButton")
-        self.stop_button.pack(side=tk.LEFT, expand=True, padx=5)
+        self.toggle_button = ttk.Button(self.button_frame, text="Record", command=self.toggle_recording,
+                                        style="Record.TButton")
+        self.toggle_button.pack(expand=True, padx=5)
 
         self.status_label = ttk.Label(self.main_frame, text="Not recording")
         self.status_label.pack(pady=10)
@@ -67,23 +68,50 @@ class AudioRecorderApp:
 
         self.recording = None
         self.audio_data = []
+        self.is_recording = False
+        self.state = "ready"
+        self.client = None
+        self.update_queue = queue.Queue()
+        self.api_call_count = 0
 
         # Initialize in a separate thread
         threading.Thread(target=self.initialize, daemon=True).start()
 
+        # Start the update loop
+        self.update_loop()
+
     def initialize(self):
         self.client = OpenAI(api_key=OPENAI_API_KEY)
-        self.update_history_display()
-        self.update_cost_display()
-        self.master.after(0, lambda: self.status_label.config(text="Ready"))
+        self.update_queue.put(("update_history_display", ()))
+        self.update_queue.put(("update_cost_display", ()))
+        self.update_queue.put(("update_status", ("Ready",)))
+
+    def update_loop(self):
+        try:
+            while True:
+                method, args = self.update_queue.get_nowait()
+                getattr(self, method)(*args)
+                self.update_queue.task_done()
+        except queue.Empty:
+            pass
+        except Exception as e:
+            logging.error(f"Error in update_loop: {e}")
+        finally:
+            self.master.after(100, self.update_loop)
+
+    def toggle_recording(self):
+        if self.state == "recording":
+            self.stop_recording()
+        elif self.state == "ready":
+            self.start_recording()
 
     def start_recording(self):
         self.audio_data = []
         self.recording = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=self.audio_callback)
         self.recording.start()
-        self.status_label.config(text="Recording...")
-        self.start_button.config(state=tk.DISABLED)
-        self.stop_button.config(state=tk.NORMAL)
+        self.update_queue.put(("update_status", ("Recording...",)))
+        self.update_queue.put(("update_button", ("Stop", "Stop.TButton")))
+        self.state = "recording"
 
     def audio_callback(self, indata, frames, time, status):
         self.audio_data.append(indata.copy())
@@ -92,9 +120,9 @@ class AudioRecorderApp:
         if self.recording:
             self.recording.stop()
             self.recording.close()
-        self.status_label.config(text="Processing...")
-        self.start_button.config(state=tk.DISABLED)
-        self.stop_button.config(state=tk.DISABLED)
+        self.update_queue.put(("update_status", ("Processing...",)))
+        self.update_queue.put(("update_button", ("Record", "Record.TButton", tk.DISABLED)))
+        self.state = "processing"
         threading.Thread(target=self.process_audio, daemon=True).start()
 
     def process_audio(self):
@@ -106,24 +134,41 @@ class AudioRecorderApp:
     def transcribe_audio(self, duration):
         try:
             with open(AUDIO_FILE, "rb") as audio_file:
+                self.api_call_count += 1
+                logging.info(f"Making API call #{self.api_call_count}")
                 transcription = self.client.audio.transcriptions.create(model="whisper-1", file=audio_file)
 
             transcription_text = transcription.text
-            self.master.after(0, lambda: self.transcription_box.delete(1.0, tk.END))
-            self.master.after(0, lambda: self.transcription_box.insert(tk.END, transcription_text))
+            self.update_queue.put(("update_transcription", (transcription_text,)))
             pyperclip.copy(transcription_text)
 
             self.save_to_history(transcription_text, duration)
             self.save_transaction(duration)
-            self.master.after(0, self.update_history_display)
-            self.master.after(0, self.update_cost_display)
+            self.update_queue.put(("update_history_display", ()))
+            self.update_queue.put(("update_cost_display", ()))
 
-            self.master.after(0, lambda: self.status_label.config(text="Transcription complete"))
-            self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+            self.update_queue.put(("update_status", ("Transcription complete",)))
+            self.update_queue.put(("update_button", ("Record", "Record.TButton", tk.NORMAL)))
+            self.state = "ready"
         except Exception as e:
-            self.master.after(0, lambda: messagebox.showerror("Transcription Error", f"An error occurred: {e}"))
-            self.master.after(0, lambda: self.status_label.config(text="Transcription failed"))
-            self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+            logging.error(f"Error in transcribe_audio: {e}")
+            self.update_queue.put(("show_error", ("Transcription Error", f"An error occurred: {e}")))
+            self.update_queue.put(("update_status", ("Transcription failed",)))
+            self.update_queue.put(("update_button", ("Record", "Record.TButton", tk.NORMAL)))
+            self.state = "ready"
+
+    def update_status(self, text):
+        self.status_label.config(text=text)
+
+    def update_button(self, text, style, state=tk.NORMAL):
+        self.toggle_button.config(text=text, style=style, state=state)
+
+    def update_transcription(self, text):
+        self.transcription_box.delete(1.0, tk.END)
+        self.transcription_box.insert(tk.END, text)
+
+    def show_error(self, title, message):
+        messagebox.showerror(title, message)
 
     def save_to_history(self, transcription, duration):
         history = self.load_history()
@@ -156,6 +201,7 @@ class AudioRecorderApp:
         transactions.append({"timestamp": timestamp, "duration": duration, "cost": cost})
         with open(TRANSACTIONS_FILE, 'w') as f:
             json.dump(transactions, f, indent=2)
+        logging.info(f"Transaction saved: duration={duration}, cost=${cost:.4f}")
 
     def load_transactions(self):
         if os.path.exists(TRANSACTIONS_FILE):
