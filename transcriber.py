@@ -1,10 +1,9 @@
 import os
 import sounddevice as sd
-import wave
+import soundfile as sf
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox
 import numpy as np
-from pathlib import Path
 from openai import OpenAI
 import json
 import datetime
@@ -13,229 +12,164 @@ import threading
 
 # Constants
 AUDIO_FILE = "output.wav"
-SAMPLERATE = 44100
+SAMPLE_RATE = 44100
 HISTORY_FILE = "transcription_history.json"
 TRANSACTIONS_FILE = "transactions.json"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 COST_PER_MINUTE = 0.006
 
-# Check if the API key is available
 if OPENAI_API_KEY is None:
     raise ValueError("OPENAI_API_KEY environment variable is not set")
 
-# Initialize OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY)
 
-recording = None
-audio_frames = []
-recording_start_time = None
+class AudioRecorderApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("Audio Recorder with Transcription")
+        master.geometry("600x800")
 
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
 
-# Function to callback and store the audio data during recording
-def audio_callback(indata, frames, time, status):
-    audio_frames.append(indata.copy())
+        # Configure button styles
+        self.style.configure("Record.TButton", background="red", foreground="white")
+        self.style.configure("Stop.TButton", background="gray", foreground="white")
 
+        self.main_frame = ttk.Frame(master, padding="20")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-# Function to start recording
-def start_recording():
-    global recording, audio_frames, recording_start_time
-    print("Recording started...")
-    status_label.config(text="Recording...", foreground="red")
-    audio_frames = []  # Clear the previous audio data
-    recording_start_time = datetime.datetime.now()
+        self.cost_label = ttk.Label(self.main_frame, text="Total Time: 0.00 min | Total Cost: $0.00")
+        self.cost_label.pack(anchor='ne', pady=(0, 20))
 
-    recording = sd.InputStream(samplerate=SAMPLERATE, channels=1, dtype='float32', callback=audio_callback)
-    recording.start()
-    start_button.config(state=tk.DISABLED)
-    stop_button.config(state=tk.NORMAL)
+        self.button_frame = ttk.Frame(self.main_frame)
+        self.button_frame.pack(fill=tk.X, pady=10)
 
+        self.start_button = ttk.Button(self.button_frame, text="Record", command=self.start_recording,
+                                       style="Record.TButton")
+        self.start_button.pack(side=tk.LEFT, expand=True, padx=5)
 
-# Function to stop recording and automatically transcribe
-def stop_recording():
-    global recording, recording_start_time
-    print("Recording stopped.")
-    recording.stop()
-    recording.close()
+        self.stop_button = ttk.Button(self.button_frame, text="Stop", command=self.stop_recording, state=tk.DISABLED,
+                                      style="Stop.TButton")
+        self.stop_button.pack(side=tk.LEFT, expand=True, padx=5)
 
-    recording_end_time = datetime.datetime.now()
-    duration = (recording_end_time - recording_start_time).total_seconds() / 60  # Duration in minutes
+        self.status_label = ttk.Label(self.main_frame, text="Not recording")
+        self.status_label.pack(pady=10)
 
-    # Convert the audio frames to a numpy array and save as WAV file
-    audio_data = np.concatenate(audio_frames, axis=0)
+        self.transcription_label = ttk.Label(self.main_frame, text="Transcription:")
+        self.transcription_label.pack(anchor='w', pady=(20, 5))
+        self.transcription_box = tk.Text(self.main_frame, wrap=tk.WORD, height=10)
+        self.transcription_box.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
 
-    with wave.open(AUDIO_FILE, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLERATE)
-        wf.writeframes((audio_data * 32767).astype('int16').tobytes())
+        self.history_label = ttk.Label(self.main_frame, text="Transcription History:")
+        self.history_label.pack(anchor='w', pady=(0, 5))
+        self.history_box = tk.Text(self.main_frame, wrap=tk.WORD, height=10)
+        self.history_box.pack(fill=tk.BOTH, expand=True)
 
-    file_size = os.path.getsize(AUDIO_FILE) / 1024  # in KB
-    status_label.config(text=f"Recording stopped. File size: {file_size:.2f} KB", foreground="green")
+        self.recording = None
+        self.audio_data = []
 
-    start_button.config(state=tk.NORMAL)
-    stop_button.config(state=tk.DISABLED)
+        # Initialize in a separate thread
+        threading.Thread(target=self.initialize, daemon=True).start()
 
-    # Automatically transcribe the audio in a separate thread
-    threading.Thread(target=transcribe_audio, args=(duration,), daemon=True).start()
+    def initialize(self):
+        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.update_history_display()
+        self.update_cost_display()
+        self.master.after(0, lambda: self.status_label.config(text="Ready"))
 
+    def start_recording(self):
+        self.audio_data = []
+        self.recording = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=self.audio_callback)
+        self.recording.start()
+        self.status_label.config(text="Recording...")
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
 
-# Function to transcribe the recorded audio
-def transcribe_audio(duration):
-    try:
-        root.after(0, lambda: status_label.config(text="Transcription in progress...", foreground="blue"))
+    def audio_callback(self, indata, frames, time, status):
+        self.audio_data.append(indata.copy())
 
-        file_path = Path(AUDIO_FILE)
-        with open(file_path, "rb") as audio_file_obj:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file_obj
-            )
-        transcription_text = transcription.text
+    def stop_recording(self):
+        if self.recording:
+            self.recording.stop()
+            self.recording.close()
+        self.status_label.config(text="Processing...")
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.DISABLED)
+        threading.Thread(target=self.process_audio, daemon=True).start()
 
-        root.after(0, lambda: transcription_box.delete(1.0, tk.END))
-        root.after(0, lambda: transcription_box.insert(tk.END, transcription_text))
+    def process_audio(self):
+        audio = np.concatenate(self.audio_data, axis=0)
+        duration = len(audio) / SAMPLE_RATE / 60  # duration in minutes
+        sf.write(AUDIO_FILE, audio, SAMPLE_RATE)
+        self.transcribe_audio(duration)
 
-        # Copy to clipboard
-        pyperclip.copy(transcription_text)
+    def transcribe_audio(self, duration):
+        try:
+            with open(AUDIO_FILE, "rb") as audio_file:
+                transcription = self.client.audio.transcriptions.create(model="whisper-1", file=audio_file)
 
-        # Save to history
-        save_to_history(transcription_text, duration)
+            transcription_text = transcription.text
+            self.master.after(0, lambda: self.transcription_box.delete(1.0, tk.END))
+            self.master.after(0, lambda: self.transcription_box.insert(tk.END, transcription_text))
+            pyperclip.copy(transcription_text)
 
-        # Save transaction and update cost
-        save_transaction(duration)
-        root.after(0, update_cost_display)
+            self.save_to_history(transcription_text, duration)
+            self.save_transaction(duration)
+            self.master.after(0, self.update_history_display)
+            self.master.after(0, self.update_cost_display)
 
-        # Update history display
-        root.after(0, update_history_display)
+            self.master.after(0, lambda: self.status_label.config(text="Transcription complete"))
+            self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+        except Exception as e:
+            self.master.after(0, lambda: messagebox.showerror("Transcription Error", f"An error occurred: {e}"))
+            self.master.after(0, lambda: self.status_label.config(text="Transcription failed"))
+            self.master.after(0, lambda: self.start_button.config(state=tk.NORMAL))
 
-        root.after(0, lambda: status_label.config(text="Transcription complete and copied to clipboard",
-                                                  foreground="green"))
-    except Exception as e:
-        root.after(0, lambda: messagebox.showerror("Transcription Error", f"An error occurred: {e}"))
-        root.after(0, lambda: status_label.config(text="Transcription failed", foreground="red"))
+    def save_to_history(self, transcription, duration):
+        history = self.load_history()
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        history.append({"timestamp": timestamp, "duration": duration, "transcription": transcription})
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(history, f, indent=2)
 
+    def load_history(self):
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'r') as f:
+                return json.load(f)
+        return []
 
-# Function to save transcription to history
-def save_to_history(transcription, duration):
-    history = load_history()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    history.append({
-        "timestamp": timestamp,
-        "duration": duration,
-        "transcription": transcription
-    })
+    def update_history_display(self):
+        history = self.load_history()
+        self.history_box.delete(1.0, tk.END)
+        for entry in reversed(history):
+            timestamp = entry['timestamp']
+            transcription = entry['transcription']
+            duration = entry.get('duration', 'N/A')
+            duration_str = f"(Duration: {duration:.2f} min)" if isinstance(duration,
+                                                                           (int, float)) else f"(Duration: {duration})"
+            self.history_box.insert(tk.END, f"{timestamp} {duration_str}:\n{transcription}\n\n")
 
-    with open(HISTORY_FILE, 'w') as f:
-        json.dump(history, f, indent=2)
+    def save_transaction(self, duration):
+        transactions = self.load_transactions()
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cost = duration * COST_PER_MINUTE
+        transactions.append({"timestamp": timestamp, "duration": duration, "cost": cost})
+        with open(TRANSACTIONS_FILE, 'w') as f:
+            json.dump(transactions, f, indent=2)
 
+    def load_transactions(self):
+        if os.path.exists(TRANSACTIONS_FILE):
+            with open(TRANSACTIONS_FILE, 'r') as f:
+                return json.load(f)
+        return []
 
-# Function to load history
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r') as f:
-            return json.load(f)
-    return []
-
-
-# Function to update history display
-def update_history_display():
-    history = load_history()
-    history_box.delete(1.0, tk.END)
-    for entry in reversed(history):
-        timestamp = entry['timestamp']
-        transcription = entry['transcription']
-
-        # Check if duration is available
-        if 'duration' in entry:
-            duration_str = f"(Duration: {entry['duration']:.2f} min)"
-        else:
-            duration_str = "(Duration: N/A)"
-
-        history_box.insert(tk.END, f"{timestamp} {duration_str}:\n{transcription}\n\n")
-
-
-# Function to save transaction
-def save_transaction(duration):
-    transactions = load_transactions()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cost = duration * COST_PER_MINUTE
-    transactions.append({"timestamp": timestamp, "duration": duration, "cost": cost})
-
-    with open(TRANSACTIONS_FILE, 'w') as f:
-        json.dump(transactions, f, indent=2)
-
-
-# Function to load transactions
-def load_transactions():
-    if os.path.exists(TRANSACTIONS_FILE):
-        with open(TRANSACTIONS_FILE, 'r') as f:
-            return json.load(f)
-    return []
-
-
-# Function to calculate total cost and time
-def calculate_totals():
-    transactions = load_transactions()
-    total_cost = sum(transaction['cost'] for transaction in transactions)
-    total_time = sum(transaction['duration'] for transaction in transactions)
-    return total_cost, total_time
+    def update_cost_display(self):
+        transactions = self.load_transactions()
+        total_cost = sum(transaction['cost'] for transaction in transactions)
+        total_time = sum(transaction['duration'] for transaction in transactions)
+        self.cost_label.config(text=f"Total Time: {total_time:.2f} min | Total Cost: ${total_cost:.2f}")
 
 
-# Function to update cost display
-def update_cost_display():
-    total_cost, total_time = calculate_totals()
-    cost_label.config(text=f"Total Time: {total_time:.2f} min | Total Cost: ${total_cost:.2f}")
-
-
-# Create the main window
 root = tk.Tk()
-root.title("Audio Recorder with Transcription")
-root.geometry("600x800")
-
-style = ttk.Style()
-style.theme_use('clam')
-
-# Configure styles
-style.configure("TButton", padding=10, font=('Helvetica', 12))
-style.configure("TLabel", font=('Helvetica', 12))
-
-# Create a main frame
-main_frame = ttk.Frame(root, padding="20 20 20 20")
-main_frame.pack(fill=tk.BOTH, expand=True)
-
-# Add cost display label in the upper right corner
-cost_label = ttk.Label(main_frame, text="Total Time: 0.00 min | Total Cost: $0.00", foreground="blue")
-cost_label.pack(anchor='ne', pady=(0, 20))
-
-# Add start/stop recording buttons
-button_frame = ttk.Frame(main_frame)
-button_frame.pack(fill=tk.X, pady=10)
-
-start_button = ttk.Button(button_frame, text="Start Recording", command=start_recording)
-start_button.pack(side=tk.LEFT, expand=True, padx=5)
-
-stop_button = ttk.Button(button_frame, text="Stop Recording", command=stop_recording, state=tk.DISABLED)
-stop_button.pack(side=tk.LEFT, expand=True, padx=5)
-
-# Add status label
-status_label = ttk.Label(main_frame, text="Not recording", foreground="black")
-status_label.pack(pady=10)
-
-# Add transcription display box
-transcription_label = ttk.Label(main_frame, text="Transcription:")
-transcription_label.pack(anchor='w', pady=(20, 5))
-transcription_box = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, height=10, font=('Helvetica', 10))
-transcription_box.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
-
-# Add history display box
-history_label = ttk.Label(main_frame, text="Transcription History:")
-history_label.pack(anchor='w', pady=(0, 5))
-history_box = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, height=10, font=('Helvetica', 10))
-history_box.pack(fill=tk.BOTH, expand=True)
-
-# Initialize history display and cost display
-update_history_display()
-update_cost_display()
-
-# Run the application
+app = AudioRecorderApp(root)
 root.mainloop()
