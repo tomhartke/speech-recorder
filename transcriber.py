@@ -10,6 +10,9 @@ import time
 import logging
 import threading
 import pyperclip
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Set up logging
 logging.basicConfig(filename='app.log', level=logging.DEBUG,

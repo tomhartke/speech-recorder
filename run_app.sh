@@ -1,3 +1,3 @@
-#!/bin/bash
-source .venv/bin/activate
+#!/bin/zsh
+source venv/bin/activate
 streamlit run transcriber.py

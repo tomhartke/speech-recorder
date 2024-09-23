@@ -20,7 +20,7 @@ This project is a transcription application that uses Streamlit for the web inte
 2. **Create a virtual environment (optional but recommended):**
 
     ```bash
-    python -m venv .venv
+    python -m venv venv
     ```
 
 3. **Activate the virtual environment:**
@@ -28,13 +28,13 @@ This project is a transcription application that uses Streamlit for the web inte
     - On macOS and Linux:
 
         ```bash
-        source .venv/bin/activate
+        source venv/bin/activate
         ```
 
     - On Windows:
 
         ```bash
-        .venv\Scripts\activate
+        venv\Scripts\activate
         ```
 
 4. **Install the required packages:**
@@ -43,13 +43,19 @@ This project is a transcription application that uses Streamlit for the web inte
     pip install -r requirements.txt
     ```
 
+
+
+5. **Put OPENAI_API_KEY in .env file:**
+  Make .env file and put it in there.
+
+
 ### Putting it all together on a mac
-    
+
 - Just copy and paste this into the command line initially, then run `./run_app.sh` in the future.
-    
+
     ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate
+    python3 -m venv venv
+    source venv/bin/activate
     pip install -r requirements.txt
     ./run_app.sh
     ```
